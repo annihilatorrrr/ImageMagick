@@ -1615,7 +1615,7 @@ static MagickBooleanType WritePDFImage(const ImageInfo *image_info,Image *image,
       preferred_version=StringToDouble(option,(char**) NULL);
       version=MagickMax(version,MagickMin(1.7,preferred_version));
     }
-  (void) FormatLocaleString(buffer,MagickPathExtent,"%%PDF-%.2g \n",version);
+  (void) FormatLocaleString(buffer,MagickPathExtent,"%%PDF-%.2g\n",version);
   (void) WriteBlobString(image,buffer);
   if (is_pdfa != MagickFalse)
     {
@@ -3269,7 +3269,7 @@ static MagickBooleanType WritePDFImage(const ImageInfo *image_info,Image *image,
     root_id);
   (void) WriteBlobString(image,buffer);
   option=GetImageOption(image_info,"pdf:no-identifier");
-  if (IsStringFalse(option) != MagickFalse)
+  if ((IsStringFalse(option) != MagickFalse) || (is_pdfa != MagickFalse))
     {
       (void) SignatureImage(image,exception);
       (void) FormatLocaleString(buffer,MagickPathExtent,"/ID [<%s> <%s>]\n",
