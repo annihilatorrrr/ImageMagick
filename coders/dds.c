@@ -2372,6 +2372,9 @@ static MagickBooleanType ReadBC7(const ImageInfo *image_info,Image *image,
 static MagickBooleanType ReadUncompressedRGBPixels(Image *image,
   const DDSInfo *dds_info,ExceptionInfo *exception)
 {
+  MagickBooleanType
+    is_rgb;
+
   Quantum
     *q;
 
@@ -2382,6 +2385,7 @@ static MagickBooleanType ReadUncompressedRGBPixels(Image *image,
   unsigned short
     color;
 
+  is_rgb=IsBitMask(dds_info->pixelformat,0x000000ff,0x0000ff00,0x00ff0000,0x0000000) ? MagickTrue : MagickFalse;
   for (y = 0; y < (ssize_t) image->rows; y++)
   {
     q=QueueAuthenticPixels(image,0,y,image->columns,1,exception);
@@ -2391,11 +2395,11 @@ static MagickBooleanType ReadUncompressedRGBPixels(Image *image,
 
     for (x = 0; x < (ssize_t) image->columns; x++)
     {
-      if (dds_info->pixelformat.rgb_bitcount == 8 ||
-          dds_info->extFormat == DXGI_FORMAT_R8_UNORM)
+      if ((dds_info->pixelformat.rgb_bitcount == 8) ||
+          (dds_info->extFormat == DXGI_FORMAT_R8_UNORM))
         SetPixelGray(image,ScaleCharToQuantum(ReadBlobByte(image)),q);
-      else if (dds_info->pixelformat.rgb_bitcount == 16 ||
-          dds_info->extFormat == DXGI_FORMAT_B5G6R5_UNORM)
+      else if ((dds_info->pixelformat.rgb_bitcount == 16) ||
+               (dds_info->extFormat == DXGI_FORMAT_B5G6R5_UNORM))
         {
            color=ReadBlobShort(image);
            SetPixelRed(image,ScaleCharToQuantum((unsigned char)
@@ -2407,12 +2411,24 @@ static MagickBooleanType ReadUncompressedRGBPixels(Image *image,
         }
       else
         {
-          SetPixelBlue(image,ScaleCharToQuantum((unsigned char)
-            ReadBlobByte(image)),q);
-          SetPixelGreen(image,ScaleCharToQuantum((unsigned char)
-            ReadBlobByte(image)),q);
-          SetPixelRed(image,ScaleCharToQuantum((unsigned char)
-            ReadBlobByte(image)),q);
+          if (is_rgb != MagickFalse)
+            {
+              SetPixelRed(image,ScaleCharToQuantum((unsigned char)
+                ReadBlobByte(image)),q);
+              SetPixelGreen(image,ScaleCharToQuantum((unsigned char)
+                ReadBlobByte(image)),q);
+              SetPixelBlue(image,ScaleCharToQuantum((unsigned char)
+                ReadBlobByte(image)),q);
+            }
+          else
+            {
+              SetPixelBlue(image,ScaleCharToQuantum((unsigned char)
+                ReadBlobByte(image)),q);
+              SetPixelGreen(image,ScaleCharToQuantum((unsigned char)
+                ReadBlobByte(image)),q);
+              SetPixelRed(image,ScaleCharToQuantum((unsigned char)
+                ReadBlobByte(image)),q);
+            }
           if (dds_info->pixelformat.rgb_bitcount == 32 || 
               dds_info->extFormat == DXGI_FORMAT_B8G8R8X8_UNORM)
             (void) ReadBlobByte(image);
@@ -2501,6 +2517,9 @@ static MagickBooleanType ReadUncompressedRGB(const ImageInfo *image_info,
 static MagickBooleanType ReadUncompressedRGBAPixels(Image *image,
   const DDSInfo *dds_info,ExceptionInfo *exception)
 {
+  MagickBooleanType
+    is_rgba;
+
   Quantum
     *q;
 
@@ -2533,6 +2552,7 @@ static MagickBooleanType ReadUncompressedRGBAPixels(Image *image,
   if (dds_info->extFormat == DXGI_FORMAT_B5G5R5A1_UNORM)
     alphaBits=1;
 
+  is_rgba=IsBitMask(dds_info->pixelformat,0x000000ff,0x0000ff00,0x00ff0000,0xff00000) ? MagickTrue : MagickFalse;
   for (y = 0; y < (ssize_t) image->rows; y++)
   {
     q = QueueAuthenticPixels(image, 0, y, image->columns, 1,exception);
@@ -2588,8 +2608,8 @@ static MagickBooleanType ReadUncompressedRGBAPixels(Image *image,
           SetPixelAlpha(image,ScaleShortToQuantum((unsigned short)
             (((pixel >> 30) & 3)/3.0)*65535),q);
         }
-      else if (dds_info->extFormat == DXGI_FORMAT_R8G8B8A8_UNORM ||
-          IsBitMask(dds_info->pixelformat,0x000000ff,0x0000ff00,0x00ff0000,0xff000000))
+      else if ((dds_info->extFormat == DXGI_FORMAT_R8G8B8A8_UNORM) ||
+               (is_rgba != MagickFalse))
         {
           SetPixelRed(image,ScaleCharToQuantum((unsigned char)
             ReadBlobByte(image)),q);

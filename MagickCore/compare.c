@@ -51,6 +51,7 @@
 #include "MagickCore/colorspace.h"
 #include "MagickCore/colorspace-private.h"
 #include "MagickCore/compare.h"
+#include "MagickCore/compare-private.h"
 #include "MagickCore/composite-private.h"
 #include "MagickCore/constitute.h"
 #include "MagickCore/distort.h"
@@ -111,24 +112,6 @@
 %    o exception: return any errors or warnings in this structure.
 %
 */
-
-static void SetImageDistortionBounds(const Image *image,
-  const Image *reconstruct_image,size_t *columns,size_t *rows)
-{
-  const char
-    *artifact;
-
-  *columns=MagickMax(image->columns,reconstruct_image->columns);
-  *rows=MagickMax(image->rows,reconstruct_image->rows);
-  artifact=GetImageArtifact(image,"compare:virtual-pixels");
-  if ((artifact != (const char *) NULL) &&
-      (IsStringTrue(artifact) == MagickFalse))
-    {
-      *columns=MagickMin(image->columns,reconstruct_image->columns);
-      *rows=MagickMin(image->rows,reconstruct_image->rows);
-    }
-}
-
 MagickExport Image *CompareImages(Image *image,const Image *reconstruct_image,
   const MetricType metric,double *distortion,ExceptionInfo *exception)
 {
@@ -263,8 +246,8 @@ MagickExport Image *CompareImages(Image *image,const Image *reconstruct_image,
         Da,
         Sa;
 
-      MagickStatusType
-        difference;
+      size_t
+        count = 0;
 
       ssize_t
         i;
@@ -278,7 +261,6 @@ MagickExport Image *CompareImages(Image *image,const Image *reconstruct_image,
           r+=(ptrdiff_t) GetPixelChannels(highlight_image);
           continue;
         }
-      difference=MagickFalse;
       Sa=QuantumScale*(double) GetPixelAlpha(image,p);
       Da=QuantumScale*(double) GetPixelAlpha(reconstruct_image,q);
       for (i=0; i < (ssize_t) GetPixelChannels(image); i++)
@@ -301,13 +283,13 @@ MagickExport Image *CompareImages(Image *image,const Image *reconstruct_image,
           pixel=Sa*(double) p[i]-Da*(double)
             GetPixelChannel(reconstruct_image,channel,q);
         distance=pixel*pixel;
-        if (distance >= fuzz)
+        if (distance > fuzz)
           {
-            difference=MagickTrue;
+            count++;
             break;
           }
       }
-      if (difference == MagickFalse)
+      if (count == 0)
         SetPixelViaPixelInfo(highlight_image,&lowlight,r);
       else
         SetPixelViaPixelInfo(highlight_image,&highlight,r);
@@ -427,6 +409,9 @@ static MagickBooleanType GetAbsoluteDistortion(const Image *image,
         Da,
         Sa;
 
+      size_t
+        count = 0;
+
       ssize_t
         i;
 
@@ -452,23 +437,25 @@ static MagickBooleanType GetAbsoluteDistortion(const Image *image,
             ((reconstruct_traits & UpdatePixelTrait) == 0))
           continue;
         if (channel == AlphaPixelChannel)
-          delta=QuantumScale*((double) p[i]-(double) GetPixelChannel(
-            reconstruct_image,channel,q));
+          delta=(double) p[i]-(double) GetPixelChannel(
+            reconstruct_image,channel,q);
         else
-          delta=QuantumScale*(Sa*(double) p[i]-Da*(double) GetPixelChannel(
-            reconstruct_image,channel,q));
-        if ((QuantumRange*delta*delta) >= fuzz)
+          delta=Sa*(double) p[i]-Da*(double) GetPixelChannel(
+            reconstruct_image,channel,q);
+        if ((delta*delta) > fuzz)
           {
-            channel_distortion[i]+=fabs(delta);
-            channel_distortion[CompositePixelChannel]+=fabs(delta);
+            channel_distortion[i]++;
+            count++;
           }
       }
+      if (count != 0)
+        channel_distortion[CompositePixelChannel]++;
       channel_area++;
       p+=(ptrdiff_t) GetPixelChannels(image);
       q+=(ptrdiff_t) GetPixelChannels(reconstruct_image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (GetAbsoluteDistortion)
+    #pragma omp critical (MagickCore_GetAbsoluteDistortion)
 #endif
     {
       ssize_t
@@ -492,7 +479,7 @@ static MagickBooleanType GetAbsoluteDistortion(const Image *image,
   }
   reconstruct_view=DestroyCacheView(reconstruct_view);
   image_view=DestroyCacheView(image_view);
-  area=PerceptibleReciprocal((double) image->columns*image->rows);
+  area=PerceptibleReciprocal(area);
   for (k=0; k < (ssize_t) GetPixelChannels(image); k++)
   {
     PixelChannel channel = GetPixelChannelChannel(image,k);
@@ -505,7 +492,6 @@ static MagickBooleanType GetAbsoluteDistortion(const Image *image,
     distortion[k]*=area;
   }
   distortion[CompositePixelChannel]*=area;
-  distortion[CompositePixelChannel]/=(double) GetImageChannels(image);
   return(status);
 }
 
@@ -604,7 +590,7 @@ static MagickBooleanType GetFuzzDistortion(const Image *image,
       q+=(ptrdiff_t) GetPixelChannels(reconstruct_image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (GetFuzzDistortion)
+    #pragma omp critical (MagickCore_GetFuzzDistortion)
 #endif
     {
       ssize_t
@@ -742,7 +728,7 @@ static MagickBooleanType GetMeanAbsoluteDistortion(const Image *image,
       q+=(ptrdiff_t) GetPixelChannels(reconstruct_image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (GetMeanAbsoluteDistortion)
+    #pragma omp critical (MagickCore_GetMeanAbsoluteDistortion)
 #endif
     {
       ssize_t
@@ -792,7 +778,8 @@ static MagickBooleanType GetMeanErrorPerPixel(Image *image,
 
   double
     area = 0.0,
-    maximum_error = MagickMinimumValue;
+    maximum_error = MagickMinimumValue,
+    mean_error = 0.0;
 
   MagickBooleanType
     status = MagickTrue;
@@ -821,7 +808,8 @@ static MagickBooleanType GetMeanErrorPerPixel(Image *image,
     double
       channel_area = 0.0,
       channel_distortion[MaxPixelChannels+1] = { 0.0 },
-      channel_maximum_error = MagickMinimumValue;
+      channel_maximum_error = MagickMinimumValue,
+      channel_mean_error = 0.0;
 
     ssize_t
       x;
@@ -873,6 +861,7 @@ static MagickBooleanType GetMeanErrorPerPixel(Image *image,
             GetPixelChannel(reconstruct_image,channel,q));
         channel_distortion[i]+=distance;
         channel_distortion[CompositePixelChannel]+=distance;
+        channel_mean_error+=distance*distance;
         if (distance > channel_maximum_error)
           channel_maximum_error=distance;
       }
@@ -881,7 +870,7 @@ static MagickBooleanType GetMeanErrorPerPixel(Image *image,
       q+=(ptrdiff_t) GetPixelChannels(reconstruct_image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (GetMeanErrorPerPixel)
+    #pragma omp critical (MagickCore_GetMeanErrorPerPixel)
 #endif
     {
       ssize_t
@@ -901,6 +890,7 @@ static MagickBooleanType GetMeanErrorPerPixel(Image *image,
       }
       distortion[CompositePixelChannel]+=
         channel_distortion[CompositePixelChannel];
+      mean_error+=channel_mean_error;
       maximum_error+=channel_maximum_error;
     }
   }
@@ -920,8 +910,9 @@ static MagickBooleanType GetMeanErrorPerPixel(Image *image,
   }
   distortion[CompositePixelChannel]*=area;
   distortion[CompositePixelChannel]/=(double) GetImageChannels(image);
-  image->error.mean_error_per_pixel=distortion[CompositePixelChannel];
-  image->error.normalized_mean_error=distortion[CompositePixelChannel];
+  image->error.mean_error_per_pixel=QuantumRange*
+    distortion[CompositePixelChannel];
+  image->error.normalized_mean_error=mean_error;
   image->error.normalized_maximum_error=maximum_error;
   return(status);
 }
@@ -1022,7 +1013,7 @@ static MagickBooleanType GetMeanSquaredDistortion(const Image *image,
       q+=(ptrdiff_t) GetPixelChannels(reconstruct_image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (GetMeanSquaredDistortion)
+    #pragma omp critical (MagickCore_GetMeanSquaredDistortion)
 #endif
     {
       ssize_t
@@ -1113,8 +1104,6 @@ static MagickBooleanType GetNormalizedCrossCorrelationDistortion(
       return(MagickFalse);
     }
   (void) memset(distortion,0,(MaxPixelChannels+1)*sizeof(*distortion));
-  (void) memset(alpha_variance,0,(MaxPixelChannels+1)*sizeof(*alpha_variance));
-  (void) memset(beta_variance,0,(MaxPixelChannels+1)*sizeof(*beta_variance));
   status=MagickTrue;
   progress=0;
   SetImageDistortionBounds(image,reconstruct_image,&columns,&rows);
@@ -1201,7 +1190,7 @@ static MagickBooleanType GetNormalizedCrossCorrelationDistortion(
       q+=(ptrdiff_t) GetPixelChannels(reconstruct_image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (GetNormalizedCrossCorrelationDistortion)
+    #pragma omp critical (MagickCore_GetNormalizedCrossCorrelationDistortion)
 #endif
     {
       ssize_t
@@ -1364,7 +1353,7 @@ static MagickBooleanType GetPeakAbsoluteDistortion(const Image *image,
       q+=(ptrdiff_t) GetPixelChannels(reconstruct_image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (GetPeakAbsoluteDistortion)
+    #pragma omp critical (MagickCore_GetPeakAbsoluteDistortion)
 #endif
     {
       ssize_t
@@ -1411,18 +1400,20 @@ static MagickBooleanType GetPeakSignalToNoiseRatio(const Image *image,
     if (((traits & UpdatePixelTrait) == 0) ||
         ((reconstruct_traits & UpdatePixelTrait) == 0))
       continue;
-    distortion[i]=10.0*PerceptibleLog10(PerceptibleReciprocal(distortion[i]))/
-      MagickPSNRDistortion;
+    distortion[i]=10.0*PerceptibleLog10(PerceptibleReciprocal(
+      distortion[i]))/MagickPSNRDistortion;
   }
-  if (distortion[CompositePixelChannel] < MagickEpsilon)
-  distortion[CompositePixelChannel]=10.0*PerceptibleLog10(PerceptibleReciprocal(
-    distortion[CompositePixelChannel]))/MagickPSNRDistortion;
+  distortion[CompositePixelChannel]=10.0*PerceptibleLog10(
+    PerceptibleReciprocal(distortion[CompositePixelChannel]))/
+    MagickPSNRDistortion;
   return(status);
 }
 
 static MagickBooleanType GetPerceptualHashDistortion(const Image *image,
   const Image *reconstruct_image,double *distortion,ExceptionInfo *exception)
 {
+#define PHASHNormalizationFactor  389.373723242
+
   ChannelPerceptualHash
     *channel_phash,
     *reconstruct_phash;
@@ -1481,13 +1472,15 @@ static MagickBooleanType GetPerceptualHashDistortion(const Image *image,
         delta=beta-alpha;
         if (IsNaN(delta) != 0)
           delta=0.0;
-        difference+=delta*delta/389.3738;
+        difference+=delta*delta/PHASHNormalizationFactor;
       }
     }
     distortion[k]+=difference;
     distortion[CompositePixelChannel]+=difference;
   }
   artifact=GetImageArtifact(image,"phash:normalize");
+  for (k=0; k <= MaxPixelChannels; k++)
+    distortion[k]/=PHASHNormalizationFactor;
   if (IsStringTrue(artifact) != MagickFalse)
     {
       ssize_t
@@ -1614,7 +1607,7 @@ static MagickBooleanType GetStructuralSimilarityDistortion(const Image *image,
   image_view=AcquireVirtualCacheView(image,exception);
   reconstruct_view=AcquireVirtualCacheView(reconstruct_image,exception);
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-  #pragma omp parallel for schedule(static,1) shared(status) \
+  #pragma omp parallel for schedule(static) shared(status) \
     magick_number_threads(image,reconstruct_image,rows,1)
 #endif
   for (y=0; y < (ssize_t) rows; y++)
@@ -1651,11 +1644,11 @@ static MagickBooleanType GetStructuralSimilarityDistortion(const Image *image,
         *magick_restrict test;
 
       double
-        x_pixel_mu[MaxPixelChannels+1],
-        x_pixel_sigma_squared[MaxPixelChannels+1],
-        xy_sigma[MaxPixelChannels+1],
-        y_pixel_mu[MaxPixelChannels+1],
-        y_pixel_sigma_squared[MaxPixelChannels+1];
+        x_pixel_mu[MaxPixelChannels+1] = { 0.0 },
+        x_pixel_sigma_squared[MaxPixelChannels+1] = { 0.0 },
+        xy_sigma[MaxPixelChannels+1] = { 0.0 },
+        y_pixel_mu[MaxPixelChannels+1] = { 0.0 },
+        y_pixel_sigma_squared[MaxPixelChannels+1] = { 0.0 };
 
       MagickRealType
         *k;
@@ -1670,11 +1663,6 @@ static MagickBooleanType GetStructuralSimilarityDistortion(const Image *image,
           q+=(ptrdiff_t) GetPixelChannels(reconstruct_image);
           continue;
         }
-      (void) memset(x_pixel_mu,0,sizeof(x_pixel_mu));
-      (void) memset(x_pixel_sigma_squared,0,sizeof(x_pixel_sigma_squared));
-      (void) memset(xy_sigma,0,sizeof(xy_sigma));
-      (void) memset(y_pixel_mu,0,sizeof(y_pixel_mu));
-      (void) memset(y_pixel_sigma_squared,0,sizeof(y_pixel_sigma_squared));
       k=kernel_info->values;
       reconstruct=p;
       test=q;
@@ -1749,7 +1737,7 @@ static MagickBooleanType GetStructuralSimilarityDistortion(const Image *image,
       channel_area++;
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (GetStructuralSimilarityDistortion)
+    #pragma omp critical (MagickCore_GetStructuralSimilarityDistortion)
 #endif
     {
       ssize_t
@@ -1784,9 +1772,11 @@ static MagickBooleanType GetStructuralSimilarityDistortion(const Image *image,
         ((reconstruct_traits & UpdatePixelTrait) == 0))
       continue;
     distortion[l]*=area;
+    distortion[l]=1.0-distortion[l];
   }
   distortion[CompositePixelChannel]*=area;
   distortion[CompositePixelChannel]/=(double) GetImageChannels(image);
+  distortion[CompositePixelChannel]=1.0-distortion[CompositePixelChannel];
   kernel_info=DestroyKernelInfo(kernel_info);
   return(status);
 }
@@ -2713,15 +2703,15 @@ static MagickBooleanType SIMMaximaImage(const Image *image,double *maxima,
           continue;
         if ((double) p[i] > channel_maxima.maxima)
           {
-  					channel_maxima.maxima=(double) p[i];
-  					channel_maxima.x=x;
-  					channel_maxima.y=y;
+            channel_maxima.maxima=(double) p[i];
+            channel_maxima.x=x;
+            channel_maxima.y=y;
           }
       }
       p+=(ptrdiff_t) GetPixelChannels(image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (SIMMaximaImage)
+    #pragma omp critical (MagickCore_SIMMaximaImage)
 #endif
     if (channel_maxima.maxima > maxima_info.maxima)
       maxima_info=channel_maxima;
@@ -2801,15 +2791,15 @@ static MagickBooleanType SIMMinimaImage(const Image *image,double *minima,
           continue;
         if ((double) p[i] < channel_minima.minima)
           {
-  					channel_minima.minima=(double) p[i];
-  					channel_minima.x=x;
-  					channel_minima.y=y;
+            channel_minima.minima=(double) p[i];
+            channel_minima.x=x;
+            channel_minima.y=y;
           }
       }
       p+=(ptrdiff_t) GetPixelChannels(image);
     }
 #if defined(MAGICKCORE_OPENMP_SUPPORT)
-    #pragma omp critical (SIMMinimaImage)
+    #pragma omp critical (MagickCore_SIMMinimaImage)
 #endif
     if (channel_minima.minima < minima_info.minima)
       minima_info=channel_minima;
@@ -3900,15 +3890,8 @@ static Image *PSNRSimilarityImage(const Image *image,const Image *reconstruct,
 
   psnr_image=MSESimilarityImage(image,reconstruct,offset,similarity_metric,
     exception);
-  if (*similarity_metric < MagickEpsilon)
-    *similarity_metric=1.0;
-  else
-    if (*similarity_metric >= 1.0)
-      *similarity_metric=0.0;
-    else
-      *similarity_metric=10.0*log10(PerceptibleReciprocal(
-        *similarity_metric))/MagickPSNRDistortion;
-  *similarity_metric=1.0-*similarity_metric;
+  *similarity_metric=10.0*PerceptibleLog10(PerceptibleReciprocal(
+    *similarity_metric))/MagickPSNRDistortion;
   return(psnr_image);
 }
 
@@ -3989,10 +3972,7 @@ MagickExport Image *SimilarityImage(const Image *image,const Image *reconstruct,
     progress;
 
   SimilarityInfo
-    similarity_info = { MagickMaximumValue, 0, 0 };
-
-  size_t
-    rows;
+    similarity_info = { 0 };
 
   ssize_t
     y;
@@ -4005,7 +3985,9 @@ MagickExport Image *SimilarityImage(const Image *image,const Image *reconstruct,
   if (IsEventLogging() != MagickFalse)
     (void) LogMagickEvent(TraceEvent,GetMagickModule(),"%s",image->filename);
   SetGeometry(reconstruct,offset);
-  *similarity_metric=MagickMaximumValue;
+  *similarity_metric=0.0;
+  offset->x=0;
+  offset->y=0;
 #if defined(MAGICKCORE_HDRI_SUPPORT) && defined(MAGICKCORE_FFTW_DELEGATE)
 {
   const char *artifact = GetImageArtifact(image,"compare:frequency-domain");
@@ -4052,7 +4034,8 @@ MagickExport Image *SimilarityImage(const Image *image,const Image *reconstruct,
           similarity_metric,exception);
         return(similarity_image);
       }
-      default: break;
+      default:
+        break;
     }
 }
 #endif
@@ -4085,26 +4068,34 @@ MagickExport Image *SimilarityImage(const Image *image,const Image *reconstruct,
     Measure similarity of reconstruction image against image.
   */
   status=MagickTrue;
+  similarity_info.similarity=GetSimilarityMetric(image,reconstruct,metric,
+    similarity_info.x,similarity_info.y,exception);
   progress=0;
   similarity_view=AcquireAuthenticCacheView(similarity_image,exception);
-  rows=similarity_image->rows;
-  for (y=0; y < (ssize_t) rows; y++)
+#if defined(MAGICKCORE_OPENMP_SUPPORT)
+  #pragma omp parallel for schedule(static) shared(status,similarity_info) \
+    magick_number_threads(image,reconstruct,similarity_image->rows << 2,1)
+#endif
+  for (y=0; y < (ssize_t) similarity_image->rows; y++)
   {
     double
       similarity;
+
+    MagickBooleanType
+      threshold_trigger = MagickFalse;
 
     Quantum
       *magick_restrict q;
 
     SimilarityInfo
-      channel_similarity = { MagickMaximumValue, 0, 0 };
+      channel_info = similarity_info;
 
     ssize_t
       x;
 
     if (status == MagickFalse)
       continue;
-    if (similarity_info.similarity <= similarity_threshold)
+    if (threshold_trigger != MagickFalse)
       continue;
     q=QueueCacheViewAuthenticPixels(similarity_view,0,y,
       similarity_image->columns,1,exception);
@@ -4115,32 +4106,37 @@ MagickExport Image *SimilarityImage(const Image *image,const Image *reconstruct,
       }
     for (x=0; x < (ssize_t) similarity_image->columns; x++)
     {
+      MagickBooleanType
+        update = MagickFalse;
+
       ssize_t
         i;
 
-      if (similarity_info.similarity <= similarity_threshold)
-        break;
-      similarity=GetSimilarityMetric(image,reconstruct,MeanSquaredErrorMetric,
-        x,y,exception);
+      similarity=GetSimilarityMetric(image,reconstruct,metric,x,y,exception);
       switch (metric)
       {
         case DotProductCorrelationErrorMetric:
-        case PhaseCorrelationErrorMetric:
         case NormalizedCrossCorrelationErrorMetric:
-        case StructuralSimilarityErrorMetric:
-        case UndefinedErrorMetric:
+        case PeakSignalToNoiseRatioErrorMetric:
+        case PhaseCorrelationErrorMetric:
+        case StructuralDissimilarityErrorMetric:
         {
-          similarity=1.0-similarity;
+          if (similarity > channel_info.similarity)
+            update=MagickTrue;
           break;
         }
         default:
-          break;
-      }
-      if (similarity < channel_similarity.similarity)
         {
-          channel_similarity.similarity=similarity;
-          channel_similarity.x=x;
-          channel_similarity.y=y;
+          if (similarity < channel_info.similarity)
+            update=MagickTrue;
+          break;
+        }
+      }
+      if (update != MagickFalse)
+        {
+          channel_info.similarity=similarity;
+          channel_info.x=x;
+          channel_info.y=y;
         }
       for (i=0; i < (ssize_t) GetPixelChannels(image); i++)
       {
@@ -4153,35 +4149,54 @@ MagickExport Image *SimilarityImage(const Image *image,const Image *reconstruct,
           continue;
         switch (metric)
         {
-          case AbsoluteErrorMetric:
-          case FuzzErrorMetric:
-          case MeanAbsoluteErrorMetric:
-          case MeanErrorPerPixelErrorMetric:
-          case MeanSquaredErrorMetric:
+          case DotProductCorrelationErrorMetric:
           case NormalizedCrossCorrelationErrorMetric:
-          case PeakAbsoluteErrorMetric:
           case PeakSignalToNoiseRatioErrorMetric:
-          case PerceptualHashErrorMetric:
-          case RootMeanSquaredErrorMetric:
-          case StructuralSimilarityErrorMetric:
+          case PhaseCorrelationErrorMetric:
           case StructuralDissimilarityErrorMetric:
           {
             SetPixelChannel(similarity_image,channel,ClampToQuantum((double)
-              QuantumRange-QuantumRange*similarity),q);
+              QuantumRange*similarity),q);
             break;
-					}
+          }
           default:
           {
             SetPixelChannel(similarity_image,channel,ClampToQuantum((double)
-              QuantumRange*similarity),q);
+              QuantumRange*(1.0-similarity)),q);
             break;
           }
         }
       }
       q+=(ptrdiff_t) GetPixelChannels(similarity_image);
     }
-    if (channel_similarity.similarity < similarity_info.similarity)
-      similarity_info=channel_similarity;
+#if defined(MAGICKCORE_OPENMP_SUPPORT)
+    #pragma omp critical (MagickCore_GetSimilarityMetric)
+#endif
+    switch (metric)
+    {
+      case DotProductCorrelationErrorMetric:
+      case NormalizedCrossCorrelationErrorMetric:
+      case PeakSignalToNoiseRatioErrorMetric:
+      case PhaseCorrelationErrorMetric:
+      case StructuralDissimilarityErrorMetric:
+      {
+        if (similarity_threshold != DefaultSimilarityThreshold)
+          if (channel_info.similarity >= similarity_threshold)
+            threshold_trigger=MagickTrue;
+        if (channel_info.similarity >= similarity_info.similarity)
+          similarity_info=channel_info;
+        break;
+      }
+      default:
+      {
+        if (similarity_threshold != DefaultSimilarityThreshold)
+          if (channel_info.similarity < similarity_threshold)
+            threshold_trigger=MagickTrue;
+        if (channel_info.similarity < similarity_info.similarity)
+          similarity_info=channel_info;
+        break;
+      }
+    }
     if (SyncCacheViewAuthenticPixels(similarity_view,exception) == MagickFalse)
       status=MagickFalse;
     if (image->progress_monitor != (MagickProgressMonitor) NULL)
