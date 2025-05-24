@@ -44,6 +44,7 @@
 #include "MagickWand/studio.h"
 #include "MagickWand/MagickWand.h"
 #include "MagickWand/mogrify-private.h"
+#include "MagickCore/compare-private.h"
 #include "MagickCore/image-private.h"
 #include "MagickCore/string-private.h"
 
@@ -206,10 +207,7 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
   "search metric is unreliable for constant-color images"
 #define CompareEqualSizedException \
   "subimage search metric is unreliable for equal-sized images"
-#define CompareSpatialEquivalentException \
-  "search metric has no spatial equivalent"
 #define DefaultDissimilarityThreshold  (1.0/MagickPI)
-#define DefaultSimilarityThreshold  (-1.0)
 #define DestroyCompare() \
 { \
   if (similarity_image != (Image *) NULL) \
@@ -245,11 +243,11 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
     *format;
 
   double
-    dissimilarity_threshold,
-    distortion,
+    dissimilarity_threshold = DefaultDissimilarityThreshold,
+    distortion = 0.0 ,
     scale = QuantumRange,
-    similarity_metric,
-    similarity_threshold;
+    similarity_metric = 0.0,
+    similarity_threshold = DefaultSimilarityThreshold;
 
   Image
     *difference_image,
@@ -271,7 +269,8 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
     status;
 
   MetricType
-    metric;
+    distortion_metric = UndefinedErrorMetric,
+    metric = UndefinedErrorMetric;
 
   RectangleInfo
     offset;
@@ -310,14 +309,9 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
     }
   difference_image=NewImageList();
   similarity_image=NewImageList();
-  dissimilarity_threshold=DefaultDissimilarityThreshold;
-  similarity_threshold=DefaultSimilarityThreshold;
-  distortion=0.0;
-  similarity_metric=0.0;
   format=(char *) NULL;
   j=1;
   k=0;
-  metric=UndefinedErrorMetric;
   NewImageStack();
   option=(char *) NULL;
   pend=MagickFalse;
@@ -1179,31 +1173,23 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
   reconstruct_image=GetImageFromList(image,1);
   offset.x=0;
   offset.y=0;
+  distortion_metric=metric;
   if (subimage_search != MagickFalse)
     {
       similarity_image=SimilarityImage(image,reconstruct_image,metric,
         similarity_threshold,&offset,&similarity_metric,exception);
       if (similarity_image == (Image *) NULL)
         return(MagickFalse);
-      if (dissimilarity_threshold == DefaultDissimilarityThreshold)
-        switch (metric)
-        {
-          case PhaseCorrelationErrorMetric:
-          case PeakSignalToNoiseRatioErrorMetric:
-          {
-            dissimilarity_threshold=1.0;
-            break;
-          }
-          default:
-            break;
-        }
-      if (similarity_metric > (dissimilarity_threshold+MagickEpsilon))
+      if (similarity_metric >= dissimilarity_threshold)
         (void) ThrowMagickException(exception,GetMagickModule(),ImageWarning,
           "ImagesTooDissimilar","`%s'",image->filename);
+      if ((metric != AbsoluteErrorMetric) &&
+          (metric != PeakSignalToNoiseRatioErrorMetric))
+        distortion_metric=MeanSquaredErrorMetric;
     }
   if (similarity_image == (Image *) NULL)
-    difference_image=CompareImages(image,reconstruct_image,metric,&distortion,
-      exception);
+    difference_image=CompareImages(image,reconstruct_image,distortion_metric,
+      &distortion,exception);
   else
     {
       Image
@@ -1214,8 +1200,8 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
       */
       composite_image=CloneImage(image,0,0,MagickTrue,exception);
       if (composite_image == (Image *) NULL)
-        difference_image=CompareImages(image,reconstruct_image,metric,
-          &distortion,exception);
+        difference_image=CompareImages(image,reconstruct_image,
+          distortion_metric,&distortion,exception);
       else
         {
           Image
@@ -1226,8 +1212,8 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
 
           (void) CompositeImage(composite_image,reconstruct_image,
             CopyCompositeOp,MagickTrue,offset.x,offset.y,exception);
-          difference_image=CompareImages(image,composite_image,metric,
-            &distortion,exception);
+          difference_image=CompareImages(image,composite_image,
+            distortion_metric,&distortion,exception);
           if (difference_image != (Image *) NULL)
             {
               difference_image->page.x=offset.x;
@@ -1244,11 +1230,11 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
               Image
                 *sans_image;
 
-              sans_image=CompareImages(distort_image,reconstruct_image,metric,
-                &distortion,exception);
-              distort_image=DestroyImage(distort_image);
+              sans_image=CompareImages(distort_image,reconstruct_image,
+                distortion_metric,&distortion,exception);
               if (sans_image != (Image *) NULL)
                 sans_image=DestroyImage(sans_image);
+              distort_image=DestroyImage(distort_image);
             }
         }
       if (difference_image != (Image *) NULL)
@@ -1259,17 +1245,19 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
     }
   switch (metric)
   {
-    case DotProductCorrelationErrorMetric:
-    case PhaseCorrelationErrorMetric:
+    case AbsoluteErrorMetric:
     {
-      if (subimage_search == MagickFalse)
-        (void) ThrowMagickException(exception,GetMagickModule(),ImageError,
-          CompareSpatialEquivalentException,"(%s)",CommandOptionToMnemonic(
-          MagickMetricOptions,(ssize_t) metric));
+      size_t
+        columns,
+        rows;
+
+      SetImageDistortionBounds(image,reconstruct_image,&columns,&rows);
+      scale=(double) columns*rows;
       break;
     }
+    case DotProductCorrelationErrorMetric:
+    case PhaseCorrelationErrorMetric:
     case NormalizedCrossCorrelationErrorMetric:
-    case PerceptualHashErrorMetric:
     {
       double
         maxima = 0.0,
@@ -1277,49 +1265,50 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
 
       (void) GetImageRange(reconstruct_image,&minima,&maxima,exception);
       if (fabs(maxima-minima) < MagickEpsilon)
-        (void) ThrowMagickException(exception,GetMagickModule(),ImageError,
+        (void) ThrowMagickException(exception,GetMagickModule(),ImageWarning,
           CompareConstantColorException,"(%s)",CommandOptionToMnemonic(
           MagickMetricOptions,(ssize_t) metric));
+      break;
+    } 
+    case PeakAbsoluteErrorMetric:
+    {
       if ((subimage_search != MagickFalse) &&
           (image->columns == reconstruct_image->columns) &&
           (image->rows == reconstruct_image->rows))
-        (void) ThrowMagickException(exception,GetMagickModule(),ImageError,
+        (void) ThrowMagickException(exception,GetMagickModule(),ImageWarning,
           CompareEqualSizedException,"(%s)",CommandOptionToMnemonic(
           MagickMetricOptions,(ssize_t) metric));
       break;
-    } 
-    default:
-      break;
-  }
-  switch (metric)
-  {
-    case AbsoluteErrorMetric:
+    }
+    case PerceptualHashErrorMetric:
     {
-      scale=(double) image->columns*image->rows;
+      if (subimage_search == MagickFalse)
+        {
+          double
+            maxima = 0.0,
+            minima = 0.0;
+
+          (void) GetImageRange(reconstruct_image,&minima,&maxima,exception);
+          if (fabs(maxima-minima) < MagickEpsilon)
+            (void) ThrowMagickException(exception,GetMagickModule(),
+              ImageWarning,CompareConstantColorException,"(%s)",
+              CommandOptionToMnemonic(MagickMetricOptions,(ssize_t) metric));
+        }
+      if ((subimage_search != MagickFalse) &&
+          (image->columns == reconstruct_image->columns) &&
+          (image->rows == reconstruct_image->rows))
+        (void) ThrowMagickException(exception,GetMagickModule(),ImageWarning,
+          CompareEqualSizedException,"(%s)",CommandOptionToMnemonic(
+          MagickMetricOptions,(ssize_t) metric));
       break;
     }
-    case DotProductCorrelationErrorMetric:
-    case StructuralDissimilarityErrorMetric:
-    {
-      distortion=fabs(distortion);
-      similarity_metric=fabs(similarity_metric);
-      break;
-    }
-    case NormalizedCrossCorrelationErrorMetric:
-    case PhaseCorrelationErrorMetric:
-    case StructuralSimilarityErrorMetric:
-    case UndefinedErrorMetric:
-    {
-      distortion=1.0-distortion;
-      similarity_metric=1.0-similarity_metric;
-      break;
-    } 
     case PeakSignalToNoiseRatioErrorMetric:
     {
       scale=MagickPSNRDistortion;
       break;
     }
-    default: break;
+    default:
+      break;
   }
   if (fabs(distortion) > CompareEpsilon)
     similar=MagickFalse;
@@ -1336,12 +1325,18 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
         {
           switch (metric)
           {
+            case AbsoluteErrorMetric:
+            {
+              (void) FormatLocaleFile(stderr,"%.*g (%.*g)",GetMagickPrecision(),
+                ceil(scale*distortion),GetMagickPrecision(),distortion);
+              break;
+            }
             case MeanErrorPerPixelErrorMetric:
             {
               (void) FormatLocaleFile(stderr,"%.*g (%.*g, %.*g)",
-                GetMagickPrecision(),QuantumRange*distortion,
-                GetMagickPrecision(),image->error.normalized_mean_error,
-                GetMagickPrecision(),image->error.normalized_maximum_error);
+                GetMagickPrecision(),scale*distortion,
+                GetMagickPrecision(),distortion,GetMagickPrecision(),
+                image->error.normalized_maximum_error);
               break;
             }
             default:
@@ -1516,7 +1511,7 @@ WandExport MagickBooleanType CompareImagesCommand(ImageInfo *image_info,
             {
               (void) FormatLocaleFile(stderr,"    %.*g (%.*g, %.*g)\n",
                 GetMagickPrecision(),channel_distortion[MaxPixelChannels],
-                GetMagickPrecision(),image->error.normalized_mean_error,
+                GetMagickPrecision(),channel_distortion[MaxPixelChannels],
                 GetMagickPrecision(),image->error.normalized_maximum_error);
               break;
             }
