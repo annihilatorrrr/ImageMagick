@@ -440,8 +440,8 @@ static void ReadPSInfo(const ImageInfo *image_info,Image *image,PSInfo *ps_info,
         */
         if (SkipMagickByteBufferUntilNewline(&buffer) != MagickFalse)
           {
-            ps_info->icc_profile=AcquireProfileStringInfo("icc",MagickPathExtent,
-              exception);
+            ps_info->icc_profile=AcquireProfileStringInfo("icc",
+              MagickPathExtent,exception);
             if (ps_info->icc_profile != (StringInfo*) NULL)
               {
                 datum=GetStringInfoDatum(ps_info->icc_profile);
@@ -454,7 +454,7 @@ static void ReadPSInfo(const ImageInfo *image_info,Image *image,PSInfo *ps_info,
                     }
                   datum[i]=(unsigned char) c;
                 }
-                SetStringInfoLength(ps_info->icc_profile,(size_t) i+1);
+                SetStringInfoLength(ps_info->icc_profile,(size_t) i);
               }
           }
         continue;
